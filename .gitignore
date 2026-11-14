@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+build/
+dist/
+.env
+.env.*
+!.env.example
+cookies*.txt
+cookies*.json
+*.mid
+*.midi
+*.part
+.musescore-*/
