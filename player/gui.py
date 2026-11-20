@@ -9,7 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
 
-from . import config
+from . import config, fonts, i18n
 from .engine import Player, PynputBackend
 from .hotkeys import Hotkeys
 from .keymap import PRESETS, KeyMap, load_mapping, transform_notes
@@ -31,11 +31,8 @@ def custom_mapping_path() -> Path:
             return candidate
     return APP_DIR / "mapping.json"
 
-PRESETS_UI = (
-    ("Virtual Piano 61 คีย์ (C2-C7)", "virtualpiano61"),
-    ("Virtual Piano 88 คีย์ (+Ctrl)", "virtualpiano88"),
-    ("กำหนดเอง (mapping.json)", "custom"),
-)
+
+PRESETS_UI = i18n.PRESETS_BY_LANG["th"]
 
 STATE_LABELS = {
     "idle": "พร้อม",
@@ -68,24 +65,29 @@ class App:
         self._apply_theme()
 
         settings = config.load_settings()
+        self.lang = settings.get("language", "th")
+        if self.lang not in {"th", "en"}:
+            self.lang = "th"
+        self.lang_var = tk.StringVar(value="English" if self.lang == "en" else "ไทย")
+
         self.path_var = tk.StringVar(value=initial_file or settings["midi_path"])
         self.song_var = tk.StringVar()
         self._update_song()
         self.path_var.trace_add("write", self._update_song)
         self.musescore_url_var = tk.StringVar()
         self.browser_var = tk.BooleanVar(value=True)
-        self.musescore_status_var = tk.StringVar(value=f"บันทึก .mid ที่: {Path.cwd()}")
+        self.musescore_status_var = tk.StringVar(
+            value=self._t("saved_to", path=Path.cwd())
+        )
         self.preset_var = tk.StringVar(
-            value=dict((key, label) for label, key in PRESETS_UI).get(
-                settings["preset"], PRESETS_UI[0][0]
-            )
+            value=i18n.get_preset_label(settings.get("preset", "virtualpiano61"), self.lang)
         )
         self.tempo_var = tk.StringVar(value=settings["tempo"])
         self.transpose_var = tk.StringVar(value=settings["transpose"])
         self.octave_var = tk.StringVar(value=settings["octave"])
         self.countdown_var = tk.StringVar(value=settings["countdown"])
         self.fold_var = tk.BooleanVar(value=bool(settings["fold"]))
-        self.status_var = tk.StringVar(value="พร้อม")
+        self.status_var = tk.StringVar(value=self._t("state_idle"))
         self.info_var = tk.StringVar(value="")
 
         self.ui_queue: queue.Queue = queue.Queue()
@@ -106,8 +108,22 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(80, self._poll)
 
+    def _t(self, key: str, **kwargs) -> str:
+        lang = getattr(self, "lang", "th")
+        return i18n.tr(key, lang=lang, **kwargs)
+
+    def _state_label(self, state: str) -> str:
+        key = f"state_{state}"
+        res = self._t(key)
+        if res != key:
+            return res
+        return STATE_LABELS.get(state, state)
+
     # ------------------------------------------------------------------ UI
     def _apply_theme(self) -> None:
+        fonts.load_bundled_fonts(BUNDLE_DIR, APP_DIR)
+        font_family = fonts.get_preferred_font(self.root)
+
         background = "#151c24"
         surface = "#202a36"
         field = "#101720"
@@ -116,19 +132,43 @@ class App:
         border = "#617287"
         accent = "#77dfb5"
         self.root.configure(background=background)
+
         default_font = tkfont.nametofont("TkDefaultFont", root=self.root)
-        default_font.configure(size=11)
+        if font_family != "TkDefaultFont":
+            default_font.configure(family=font_family, size=11)
+        else:
+            default_font.configure(size=11)
+
+        for named in ("TkTextFont", "TkMenuFont"):
+            try:
+                fn = tkfont.nametofont(named, root=self.root)
+                if font_family != "TkDefaultFont":
+                    fn.configure(family=font_family, size=11)
+                else:
+                    fn.configure(size=11)
+            except Exception:
+                pass
+
+        try:
+            fn = tkfont.nametofont("TkHeadingFont", root=self.root)
+            if font_family != "TkDefaultFont":
+                fn.configure(family=font_family, size=13, weight="bold")
+            else:
+                fn.configure(size=13, weight="bold")
+        except Exception:
+            pass
+
         family = default_font.actual("family")
         style = ttk.Style(self.root)
         style.theme_use("clam")
         style.configure(".", background=background, foreground=text, font="TkDefaultFont")
         style.configure("TFrame", background=background)
         style.configure("Surface.TFrame", background=surface)
-        style.configure("TLabel", background=background, foreground=text)
+        style.configure("TLabel", background=background, foreground=text, font="TkDefaultFont")
         style.configure("Title.TLabel", font=(family, 14, "bold"))
         style.configure("Song.TLabel", background=surface, font=(family, 12, "bold"))
-        style.configure("Muted.TLabel", foreground=muted)
-        style.configure("SurfaceMuted.TLabel", background=surface, foreground=muted)
+        style.configure("Muted.TLabel", foreground=muted, font=(family, 10))
+        style.configure("SurfaceMuted.TLabel", background=surface, foreground=muted, font=(family, 10))
         style.configure(
             "TButton", background=surface, foreground=text, bordercolor=border,
             padding=(12, 8), relief="flat", focuscolor=accent, focusthickness=2,
@@ -169,17 +209,26 @@ class App:
         header = ttk.Frame(main)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         ttk.Label(header, text="Roblox Piano", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="อยู่เหนือหน้าต่างอื่น", style="Muted.TLabel").pack(side="right")
+        self.header_topmost_label = ttk.Label(header, text=self._t("topmost"), style="Muted.TLabel")
+        self.header_topmost_label.pack(side="right")
 
         song = ttk.Frame(main, style="Surface.TFrame", padding=12)
         song.grid(row=1, column=0, sticky="ew")
         song.columnconfigure(0, weight=1)
-        ttk.Label(song, text="เพลงที่เลือก", style="SurfaceMuted.TLabel").grid(row=0, column=0, sticky="w")
+        self.song_label = ttk.Label(song, text=self._t("selected_song"), style="SurfaceMuted.TLabel")
+        self.song_label.grid(row=0, column=0, sticky="w")
         ttk.Label(song, textvariable=self.song_var, style="Song.TLabel", wraplength=300).grid(
             row=1, column=0, sticky="w", pady=(4, 0),
         )
-        ttk.Button(song, text="เลือกไฟล์...", command=self._browse).grid(
-            row=0, column=1, rowspan=2, padx=(12, 0),
+        self.browse_button = ttk.Button(song, text=self._t("browse"), command=self._browse)
+        self.browse_button.grid(
+            row=0, column=1, padx=(12, 0), sticky="ew",
+        )
+        self.sheet_button = ttk.Button(
+            song, text=self._t("btn_export_sheet"), command=self._export_sheet_dialog
+        )
+        self.sheet_button.grid(
+            row=1, column=1, padx=(12, 0), pady=(4, 0), sticky="ew",
         )
 
         controls = ttk.Frame(main)
@@ -187,11 +236,12 @@ class App:
         controls.columnconfigure(0, weight=2)
         controls.columnconfigure(1, weight=1)
         controls.columnconfigure(2, weight=1)
-        self.start_button = ttk.Button(controls, text="เริ่มเล่น (F8)", style="Accent.TButton", command=self._toggle)
+        self.start_button = ttk.Button(controls, text=self._t("play_f8"), style="Accent.TButton", command=self._toggle)
         self.start_button.grid(row=0, column=0, sticky="ew")
-        self.pause_button = ttk.Button(controls, text="พัก (F9)", command=self._toggle_pause)
+        self.pause_button = ttk.Button(controls, text=self._t("pause_f9"), command=self._toggle_pause)
         self.pause_button.grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Button(controls, text="หยุด (Esc)", command=self._abort).grid(row=0, column=2, sticky="ew")
+        self.stop_button = ttk.Button(controls, text=self._t("stop_esc"), command=self._abort)
+        self.stop_button.grid(row=0, column=2, sticky="ew")
 
         self.progress = ttk.Progressbar(main, mode="determinate", maximum=1.0)
         self.progress.grid(row=3, column=0, sticky="ew", pady=(0, 8))
@@ -204,21 +254,29 @@ class App:
         sections.grid(row=6, column=0, sticky="ew", pady=(4, 0))
         sections.columnconfigure(0, weight=1)
         sections.columnconfigure(1, weight=1)
-        download_toggle = ttk.Button(sections, text="MuseScore +", command=lambda: self._toggle_panel("download"))
+        download_toggle = ttk.Button(
+            sections, text=f"{self._t('musescore_panel')} +",
+            command=lambda: self._toggle_panel("download"),
+        )
         download_toggle.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        settings_toggle = ttk.Button(sections, text="ตั้งค่าการเล่น +", command=lambda: self._toggle_panel("settings"))
+        settings_toggle = ttk.Button(
+            sections, text=f"{self._t('settings_panel')} +",
+            command=lambda: self._toggle_panel("settings"),
+        )
         settings_toggle.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         download = ttk.Frame(main, padding=(0, 12, 0, 0))
         download.grid(row=7, column=0, sticky="ew")
         download.columnconfigure(0, weight=1)
-        ttk.Label(download, text="URL MuseScore / score ID").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.musescore_url_label = ttk.Label(download, text=self._t("musescore_url_label"))
+        self.musescore_url_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
         ttk.Entry(download, textvariable=self.musescore_url_var).grid(row=1, column=0, sticky="ew")
-        self.download_button = ttk.Button(download, text="ดาวน์โหลด MIDI", command=self._download)
+        self.download_button = ttk.Button(download, text=self._t("download_midi"), command=self._download)
         self.download_button.grid(row=1, column=1, padx=(8, 0))
-        ttk.Checkbutton(
-            download, text="ใช้ Chromium เบื้องหลัง", variable=self.browser_var,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=8)
+        self.browser_check = ttk.Checkbutton(
+            download, text=self._t("use_browser"), variable=self.browser_var,
+        )
+        self.browser_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=8)
         ttk.Label(download, textvariable=self.musescore_status_var, style="Muted.TLabel", wraplength=440).grid(
             row=3, column=0, columnspan=2, sticky="w",
         )
@@ -227,55 +285,152 @@ class App:
         options.grid(row=8, column=0, sticky="ew")
         options.columnconfigure(0, weight=1)
         options.columnconfigure(1, weight=1)
-        ttk.Label(options, text="ไฟล์ MIDI (พาธเต็ม)").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Entry(options, textvariable=self.path_var).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 12))
-        ttk.Label(options, text="ผังคีย์").grid(row=2, column=0, columnspan=2, sticky="w")
+
+        self.lang_label = ttk.Label(options, text=self._t("language_label"))
+        self.lang_label.grid(row=0, column=0, columnspan=2, sticky="w")
+        self.lang_box = ttk.Combobox(
+            options,
+            textvariable=self.lang_var,
+            values=["ไทย", "English"],
+            state="readonly",
+        )
+        self.lang_box.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 12))
+        self.lang_box.bind("<<ComboboxSelected>>", self._on_language_change)
+
+        self.midi_path_label = ttk.Label(options, text=self._t("midi_file_label"))
+        self.midi_path_label.grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Entry(options, textvariable=self.path_var).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 12))
+
+        self.preset_label = ttk.Label(options, text=self._t("keymap_label"))
+        self.preset_label.grid(row=4, column=0, columnspan=2, sticky="w")
         self.preset_box = ttk.Combobox(
             options,
             textvariable=self.preset_var,
-            values=[label for label, _ in PRESETS_UI],
+            values=[label for label, _ in i18n.PRESETS_BY_LANG[self.lang]],
             state="readonly",
         )
-        self.preset_box.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 12))
+        self.preset_box.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 12))
 
-        ttk.Label(options, text="ความเร็ว").grid(row=4, column=0, sticky="w")
+        self.tempo_label = ttk.Label(options, text=self._t("tempo_label"))
+        self.tempo_label.grid(row=6, column=0, sticky="w")
         ttk.Spinbox(
             options, from_=0.25, to=4.0, increment=0.05, width=8,
             textvariable=self.tempo_var,
-        ).grid(row=5, column=0, sticky="ew", padx=(0, 8), pady=(4, 12))
-
-        ttk.Label(options, text="นับถอยหลัง (วินาที)").grid(row=4, column=1, sticky="w")
-        ttk.Spinbox(
-            options, from_=0, to=15, width=8, textvariable=self.countdown_var
-        ).grid(row=5, column=1, sticky="ew", pady=(4, 12))
-
-        ttk.Label(options, text="ทรานสโพส (semitone)").grid(row=6, column=0, sticky="w")
-        ttk.Spinbox(
-            options, from_=-24, to=24, width=8, textvariable=self.transpose_var
         ).grid(row=7, column=0, sticky="ew", padx=(0, 8), pady=(4, 12))
 
-        ttk.Label(options, text="อ็อกเทฟ").grid(row=6, column=1, sticky="w")
+        self.countdown_label = ttk.Label(options, text=self._t("countdown_label"))
+        self.countdown_label.grid(row=6, column=1, sticky="w")
         ttk.Spinbox(
-            options, from_=-3, to=3, width=8, textvariable=self.octave_var
+            options, from_=0, to=15, width=8, textvariable=self.countdown_var
         ).grid(row=7, column=1, sticky="ew", pady=(4, 12))
 
-        ttk.Checkbutton(
-            options, text="พับโน้ตนอกช่วงเข้าโน้ตที่ใกล้สุด", variable=self.fold_var
-        ).grid(row=8, column=0, columnspan=2, sticky="w")
-        ttk.Label(
-            main, text="Roblox ต้องเป็นหน้าต่างที่ active ขณะเล่น",
+        self.transpose_label = ttk.Label(options, text=self._t("transpose_label"))
+        self.transpose_label.grid(row=8, column=0, sticky="w")
+        ttk.Spinbox(
+            options, from_=-24, to=24, width=8, textvariable=self.transpose_var
+        ).grid(row=9, column=0, sticky="ew", padx=(0, 8), pady=(4, 12))
+
+        self.octave_label = ttk.Label(options, text=self._t("octave_label"))
+        self.octave_label.grid(row=8, column=1, sticky="w")
+        ttk.Spinbox(
+            options, from_=-3, to=3, width=8, textvariable=self.octave_var
+        ).grid(row=9, column=1, sticky="ew", pady=(4, 12))
+
+        self.fold_check = ttk.Checkbutton(
+            options, text=self._t("fold_label"), variable=self.fold_var
+        )
+        self.fold_check.grid(row=10, column=0, columnspan=2, sticky="w")
+
+        self.active_hint_label = ttk.Label(
+            main, text=self._t("roblox_active_hint"),
             style="Muted.TLabel", wraplength=440,
-        ).grid(row=9, column=0, sticky="w", pady=(12, 0))
+        )
+        self.active_hint_label.grid(row=9, column=0, sticky="w", pady=(12, 0))
+
         self._panels = {
-            "download": (download, download_toggle, "MuseScore"),
-            "settings": (options, settings_toggle, "ตั้งค่าการเล่น"),
+            "download": (download, download_toggle, self._t("musescore_panel")),
+            "settings": (options, settings_toggle, self._t("settings_panel")),
         }
         download.grid_remove()
         options.grid_remove()
 
+    def _on_language_change(self, *_args) -> None:
+        selected_label = self.lang_var.get()
+        new_lang = "en" if selected_label == "English" else "th"
+        if new_lang == getattr(self, "lang", "th"):
+            return
+        self.lang = new_lang
+
+        # Update presets combobox options and value
+        current_preset = self._preset_key()
+        presets = i18n.PRESETS_BY_LANG[self.lang]
+        if hasattr(self, "preset_box"):
+            self.preset_box.configure(values=[label for label, _ in presets])
+        self.preset_var.set(i18n.get_preset_label(current_preset, self.lang))
+
+        # Update static labels and buttons
+        if hasattr(self, "header_topmost_label"):
+            self.header_topmost_label.configure(text=self._t("topmost"))
+        if hasattr(self, "song_label"):
+            self.song_label.configure(text=self._t("selected_song"))
+        if hasattr(self, "browse_button"):
+            self.browse_button.configure(text=self._t("browse"))
+        if hasattr(self, "sheet_button"):
+            self.sheet_button.configure(text=self._t("btn_export_sheet"))
+        if hasattr(self, "stop_button"):
+            self.stop_button.configure(text=self._t("stop_esc"))
+
+        if hasattr(self, "_panels"):
+            if "download" in self._panels:
+                panel, btn, _ = self._panels["download"]
+                self._panels["download"] = (panel, btn, self._t("musescore_panel"))
+                symbol = "−" if panel.winfo_manager() else "+"
+                btn.configure(text=f"{self._t('musescore_panel')} {symbol}")
+            if "settings" in self._panels:
+                panel, btn, _ = self._panels["settings"]
+                self._panels["settings"] = (panel, btn, self._t("settings_panel"))
+                symbol = "−" if panel.winfo_manager() else "+"
+                btn.configure(text=f"{self._t('settings_panel')} {symbol}")
+
+        if hasattr(self, "musescore_url_label"):
+            self.musescore_url_label.configure(text=self._t("musescore_url_label"))
+        if hasattr(self, "download_button"):
+            self.download_button.configure(text=self._t("download_midi"))
+        if hasattr(self, "browser_check"):
+            self.browser_check.configure(text=self._t("use_browser"))
+
+        if hasattr(self, "lang_label"):
+            self.lang_label.configure(text=self._t("language_label"))
+        if hasattr(self, "midi_path_label"):
+            self.midi_path_label.configure(text=self._t("midi_file_label"))
+        if hasattr(self, "preset_label"):
+            self.preset_label.configure(text=self._t("keymap_label"))
+        if hasattr(self, "tempo_label"):
+            self.tempo_label.configure(text=self._t("tempo_label"))
+        if hasattr(self, "countdown_label"):
+            self.countdown_label.configure(text=self._t("countdown_label"))
+        if hasattr(self, "transpose_label"):
+            self.transpose_label.configure(text=self._t("transpose_label"))
+        if hasattr(self, "octave_label"):
+            self.octave_label.configure(text=self._t("octave_label"))
+        if hasattr(self, "fold_check"):
+            self.fold_check.configure(text=self._t("fold_label"))
+        if hasattr(self, "active_hint_label"):
+            self.active_hint_label.configure(text=self._t("roblox_active_hint"))
+
+        # Update dynamic texts if they are in idle/default state
+        if not self.path_var.get().strip():
+            self.song_var.set(self._t("no_song"))
+        if not self._is_active() and not self._downloading:
+            self.status_var.set(self._t("state_idle"))
+            self.musescore_status_var.set(self._t("saved_to", path=Path.cwd()))
+
+        self._refresh_buttons()
+        self._fit_window()
+
     def _update_song(self, *_args) -> None:
         path = self.path_var.get().strip()
-        self.song_var.set(Path(path).name if path else "ยังไม่ได้เลือกเพลง")
+        self.song_var.set(Path(path).name if path else self._t("no_song"))
 
     def _fit_window(self, *_args) -> None:
         self.root.update_idletasks()
@@ -284,7 +439,9 @@ class App:
     def _toggle_panel(self, name: str) -> None:
         selected = self._panels[name][0]
         opening = not selected.winfo_manager()
-        for key, (panel, button, label) in self._panels.items():
+        for key, item in self._panels.items():
+            panel, button = item[0], item[1]
+            label = item[2] if len(item) > 2 else name
             if key == name and opening:
                 panel.grid()
                 button.configure(text=f"{label} −")
@@ -297,10 +454,7 @@ class App:
     def _show_permission_hint(self) -> None:
         trusted = _accessibility_trusted()
         if trusted is False:
-            self.info_var.set(
-                "macOS ยังไม่ได้ให้สิทธิ์ Accessibility — ไปที่ System Settings > "
-                "Privacy & Security > Accessibility แล้วเพิ่ม Terminal/Python"
-            )
+            self.info_var.set(self._t("macos_access_hint"))
 
     # ------------------------------------------------------------ actions
     def _download(self) -> None:
@@ -308,11 +462,11 @@ class App:
             return
         url = self.musescore_url_var.get().strip()
         if not url:
-            messagebox.showwarning("ยังไม่มี URL", "ใส่ URL หน้าเพลง MuseScore หรือเลข score ID ก่อน")
+            messagebox.showwarning(self._t("no_url_title"), self._t("no_url_msg"))
             return
         self._downloading = True
-        self.musescore_status_var.set("กำลังดาวน์โหลด MIDI...")
-        self.status_var.set("กำลังดาวน์โหลด MIDI...")
+        self.musescore_status_var.set(self._t("downloading"))
+        self.status_var.set(self._t("downloading"))
         self._refresh_buttons()
         threading.Thread(
             target=self._download_worker, args=(url, self.browser_var.get()), daemon=True,
@@ -331,17 +485,117 @@ class App:
     def _browse(self) -> None:
         initial = Path(self.path_var.get()).expanduser().parent
         path = filedialog.askopenfilename(
-            title="เลือกไฟล์ MIDI",
+            title=self._t("browse_title"),
             initialdir=str(initial) if initial.is_dir() else str(Path.home()),
-            filetypes=[("MIDI", "*.mid *.midi"), ("ทุกไฟล์", "*.*")],
+            filetypes=[("MIDI", "*.mid *.midi"), (self._t("filetypes_all"), "*.*")],
         )
         if path:
             self.path_var.set(path)
             self.info_var.set("")
 
+    def _export_sheet_dialog(self) -> None:
+        path = self.path_var.get().strip()
+        if not path:
+            messagebox.showwarning(self._t("no_file_title"), self._t("no_file_msg"))
+            return
+        try:
+            keymap = self._get_keymap()
+            midi = self._load_midi(path)
+            tempo = float(self.tempo_var.get())
+            transpose = int(float(self.transpose_var.get()))
+            octave = int(float(self.octave_var.get()))
+            if tempo <= 0:
+                raise ValueError(self._t("tempo_invalid_msg"))
+        except (ValueError, OSError, MidiError) as exc:
+            messagebox.showerror(self._t("invalid_settings_title"), str(exc))
+            return
+
+        transformed = transform_notes(
+            midi.notes,
+            keymap,
+            tempo=tempo,
+            transpose=transpose,
+            octave=octave,
+            fold=self.fold_var.get(),
+        )
+        if not transformed.notes:
+            messagebox.showerror(self._t("cannot_play_title"), self._t("no_mapped_notes_msg"))
+            return
+
+        from .sheet import notes_to_sheet
+
+        sheet_text = notes_to_sheet(transformed.notes)
+
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(sheet_text)
+        except Exception:
+            pass
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"{self._t('sheet_window_title')} - {Path(path).name}")
+        dlg.attributes("-topmost", True)
+        dlg.configure(background="#151c24")
+        dlg.minsize(480, 360)
+
+        top_frame = ttk.Frame(dlg, padding=12)
+        top_frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            top_frame,
+            text=self._t("sheet_copied_hint"),
+            style="Muted.TLabel",
+            wraplength=460,
+        ).pack(anchor="w", pady=(0, 8))
+
+        text_box = tk.Text(
+            top_frame,
+            wrap="word",
+            background="#101720",
+            foreground="#eef3f8",
+            insertbackground="#eef3f8",
+            relief="flat",
+            font=("Consolas", 11),
+            padx=8,
+            pady=8,
+        )
+        text_box.insert("1.0", sheet_text)
+        text_box.pack(fill="both", expand=True)
+
+        btn_bar = ttk.Frame(top_frame)
+        btn_bar.pack(fill="x", pady=(8, 0))
+
+        def copy_all():
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text_box.get("1.0", "end-1c"))
+                messagebox.showinfo(self._t("sheet_window_title"), self._t("sheet_copied_alert"), parent=dlg)
+            except Exception:
+                pass
+
+        def save_file():
+            default_name = f"{Path(path).stem}_sheet.txt"
+            target = filedialog.asksaveasfilename(
+                title=self._t("sheet_save_title"),
+                initialfile=default_name,
+                defaultextension=".txt",
+                filetypes=[("Text file", "*.txt"), (self._t("filetypes_all"), "*.*")],
+                parent=dlg,
+            )
+            if target:
+                Path(target).write_text(text_box.get("1.0", "end-1c"), encoding="utf-8")
+                messagebox.showinfo(
+                    self._t("sheet_window_title"),
+                    self._t("sheet_file_saved", path=target),
+                    parent=dlg,
+                )
+
+        ttk.Button(btn_bar, text=self._t("sheet_copy_again"), command=copy_all).pack(side="left", padx=(0, 6))
+        ttk.Button(btn_bar, text=self._t("sheet_save_file"), command=save_file).pack(side="left")
+        ttk.Button(btn_bar, text=self._t("sheet_close"), command=dlg.destroy).pack(side="right")
+
     def _preset_key(self) -> str:
-        mapping = {label: key for label, key in PRESETS_UI}
-        return mapping.get(self.preset_var.get(), "virtualpiano61")
+        return i18n.get_preset_key(self.preset_var.get())
 
     def _get_keymap(self) -> KeyMap:
         preset = self._preset_key()
@@ -379,7 +633,7 @@ class App:
             return
         path = self.path_var.get().strip()
         if not path:
-            messagebox.showwarning("ยังไม่มีไฟล์", "เลือกไฟล์ MIDI ก่อน")
+            messagebox.showwarning(self._t("no_file_title"), self._t("no_file_msg"))
             return
         try:
             keymap = self._get_keymap()
@@ -389,9 +643,9 @@ class App:
             octave = int(float(self.octave_var.get()))
             countdown = max(0.0, float(self.countdown_var.get()))
             if tempo <= 0:
-                raise ValueError("ความเร็วต้องมากกว่า 0")
+                raise ValueError(self._t("tempo_invalid_msg"))
         except (ValueError, OSError, MidiError) as exc:
-            messagebox.showerror("ตั้งค่าไม่ถูกต้อง", str(exc))
+            messagebox.showerror(self._t("invalid_settings_title"), str(exc))
             return
 
         transformed = transform_notes(
@@ -404,15 +658,15 @@ class App:
         )
         if not transformed.notes:
             messagebox.showerror(
-                "เล่นไม่ได้",
-                "ไม่มีโน้ตที่ map เข้าคีย์ได้ — ตรวจผังคีย์หรือเปิดการพับโน้ต",
+                self._t("cannot_play_title"),
+                self._t("no_mapped_notes_msg"),
             )
             return
 
         try:
             backend = self._get_backend()
         except RuntimeError as exc:
-            messagebox.showerror("ขาดไลบรารี", str(exc))
+            messagebox.showerror(self._t("missing_library_title"), str(exc))
             return
 
         if self.player is not None:
@@ -421,15 +675,22 @@ class App:
         self.player = Player(backend, on_state=lambda state: self.ui_queue.put(("state", state)))
         self.player.play(transformed.notes, countdown=countdown)
         self.progress.configure(maximum=max(self.player.duration, 0.1), value=0)
-        self.status_var.set(STATE_LABELS["countdown"] if countdown else STATE_LABELS["playing"])
+        self.status_var.set(self._state_label("countdown") if countdown else self._state_label("playing"))
 
         total = len(midi.notes)
         folded = transformed.folded
         skipped = transformed.skipped
         self.info_var.set(
-            f"{Path(path).name}: โน้ต {total} · เล่นได้ {len(transformed.notes)} · "
-            f"พับ {folded} · ข้าม {skipped} · ยาว {midi.duration / tempo:.1f} วินาที · "
-            f"ผัง {keymap.name}"
+            self._t(
+                "info_stats",
+                name=Path(path).name,
+                total=total,
+                playable=len(transformed.notes),
+                folded=folded,
+                skipped=skipped,
+                duration=midi.duration / tempo,
+                keymap=keymap.name,
+            )
         )
         self._refresh_buttons()
 
@@ -446,7 +707,7 @@ class App:
             self.player.stop(wait=True)
         if self.backend is not None:
             self.backend.release_all()
-        self.status_var.set(STATE_LABELS["stopped"])
+        self.status_var.set(self._state_label("stopped"))
         self.progress.configure(value=0)
         self._refresh_buttons()
 
@@ -461,7 +722,7 @@ class App:
             )
             self._hotkeys.start()
         except Exception as exc:
-            self.status_var.set(f"global hotkey ไม่ทำงาน: {exc}")
+            self.status_var.set(self._t("hotkey_failed", error=exc))
             self._hotkeys = None
 
     def _poll(self) -> None:
@@ -470,9 +731,9 @@ class App:
                 kind, value = self.ui_queue.get_nowait()
                 if kind == "state":
                     if value.startswith("error"):
-                        self.status_var.set(f"ผิดพลาด: {value[6:].strip()}")
+                        self.status_var.set(self._t("error_prefix", error=value[6:].strip()))
                     else:
-                        self.status_var.set(STATE_LABELS.get(value, value))
+                        self.status_var.set(self._state_label(value))
                     self._refresh_buttons()
                 elif kind == "hotkey":
                     if value == "toggle":
@@ -482,10 +743,10 @@ class App:
                     elif value == "abort":
                         self._abort()
                 elif kind == "hotkey_error":
-                    self.status_var.set(f"hotkey ผิดพลาด: {value}")
+                    self.status_var.set(self._t("hotkey_error", error=value))
                 elif kind == "download_status":
                     self.musescore_status_var.set(value)
-                    self.status_var.set("กำลังดาวน์โหลด MIDI...")
+                    self.status_var.set(self._t("downloading"))
                 elif kind in {"download_done", "download_error"}:
                     self._downloading = False
                     self._refresh_buttons()
@@ -493,12 +754,12 @@ class App:
                         self.path_var.set(str(value))
                         self._midi_cache = None
                         self.info_var.set("")
-                        self.status_var.set("พร้อมเล่น · กด F8 แล้วสลับไป Roblox")
-                        self.musescore_status_var.set(f"บันทึกแล้ว: {value} · กด F8 เพื่อเล่น")
+                        self.status_var.set(self._t("download_done_status"))
+                        self.musescore_status_var.set(self._t("download_saved", path=value))
                     else:
-                        self.status_var.set("ดาวน์โหลดไม่สำเร็จ")
-                        self.musescore_status_var.set(f"ดาวน์โหลดไม่สำเร็จ: {value}")
-                        messagebox.showerror("ดาวน์โหลด MuseScore ไม่สำเร็จ", value)
+                        self.status_var.set(self._t("download_failed_short"))
+                        self.musescore_status_var.set(self._t("download_failed_detail", error=value))
+                        messagebox.showerror(self._t("download_failed_title"), value)
         except queue.Empty:
             pass
 
@@ -512,16 +773,22 @@ class App:
     def _refresh_buttons(self) -> None:
         active = self._is_active()
         paused = self.player is not None and self.player.state == "paused"
-        self.start_button.configure(text="หยุด (F8)" if active else "เริ่มเล่น (F8)")
-        self.start_button.configure(state="disabled" if self._downloading else "normal")
-        self.download_button.configure(state="disabled" if self._downloading or active else "normal")
-        self.pause_button.configure(state="normal" if active else "disabled")
-        self.pause_button.configure(text="เล่นต่อ (F9)" if paused else "พัก (F9)")
+        if hasattr(self, "start_button"):
+            self.start_button.configure(text=self._t("stop_f8") if active else self._t("play_f8"))
+            self.start_button.configure(state="disabled" if self._downloading else "normal")
+        if hasattr(self, "download_button"):
+            self.download_button.configure(state="disabled" if self._downloading or active else "normal")
+        if hasattr(self, "pause_button"):
+            self.pause_button.configure(state="normal" if active else "disabled")
+            self.pause_button.configure(text=self._t("resume_f9") if paused else self._t("pause_f9"))
 
     # -------------------------------------------------------------- close
     def _on_close(self) -> None:
         if self._downloading:
-            messagebox.showwarning("กำลังดาวน์โหลด", "รอให้ดาวน์โหลดเสร็จก่อนปิดโปรแกรม")
+            messagebox.showwarning(
+                self._t("closing_download_warning_title"),
+                self._t("closing_download_warning_msg"),
+            )
             return
         if self.player is not None:
             self.player.stop(wait=False)
@@ -538,6 +805,7 @@ class App:
                 "octave": self.octave_var.get(),
                 "fold": self.fold_var.get(),
                 "countdown": self.countdown_var.get(),
+                "language": getattr(self, "lang", "th"),
             }
         )
         self.root.destroy()

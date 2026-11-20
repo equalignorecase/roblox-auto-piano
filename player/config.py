@@ -14,6 +14,7 @@ DEFAULTS = {
     "octave": "0",
     "fold": True,
     "countdown": "3",
+    "language": "th",
 }
 
 
