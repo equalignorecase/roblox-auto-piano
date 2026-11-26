@@ -1,4 +1,4 @@
-"""Global hotkeys (F8 start/stop, F9 pause, Esc abort)."""
+"""Global hotkeys (F8 start/stop, F9 pause, Esc abort, Shift+F9 speed up, Shift+F8 speed down)."""
 from __future__ import annotations
 
 from typing import Callable
@@ -16,11 +16,15 @@ class Hotkeys:
         on_toggle: Callable[[], None],
         on_pause: Callable[[], None],
         on_abort: Callable[[], None],
+        on_speed_up: Callable[[], None] | None = None,
+        on_speed_down: Callable[[], None] | None = None,
         on_error: Callable[[str], None] | None = None,
     ) -> None:
         self._on_toggle = on_toggle
         self._on_pause = on_pause
         self._on_abort = on_abort
+        self._on_speed_up = on_speed_up
+        self._on_speed_down = on_speed_down
         self._on_error = on_error
         self._listener = None
 
@@ -37,13 +41,17 @@ class Hotkeys:
 
             return wrapped
 
-        self._listener = keyboard.GlobalHotKeys(
-            {
-                "<f8>": guard(self._on_toggle),
-                "<f9>": guard(self._on_pause),
-                "<esc>": guard(self._on_abort),
-            }
-        )
+        bindings = {
+            "<f8>": guard(self._on_toggle),
+            "<f9>": guard(self._on_pause),
+            "<esc>": guard(self._on_abort),
+        }
+        if self._on_speed_up:
+            bindings["<shift>+<f9>"] = guard(self._on_speed_up)
+        if self._on_speed_down:
+            bindings["<shift>+<f8>"] = guard(self._on_speed_down)
+
+        self._listener = keyboard.GlobalHotKeys(bindings)
         self._listener.daemon = True
         self._listener.start()
 

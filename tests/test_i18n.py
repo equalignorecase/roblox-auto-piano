@@ -121,7 +121,7 @@ class I18nTests(unittest.TestCase):
         self.assertEqual(app.browse_button.config["text"], "Browse...")
         self.assertEqual(app.sheet_button.config["text"], "Export Sheet")
         self.assertEqual(app.start_button.config["text"], "Play (F8)")
-        self.assertEqual(app.stop_button.config["text"], "Stop (Esc)")
+        self.assertEqual(app.stop_button.config["text"], "Reset (Esc)")
         self.assertEqual(app.lang_label.config["text"], "Language / ภาษา")
 
         # Switch back to Thai
@@ -133,6 +133,7 @@ class I18nTests(unittest.TestCase):
         self.assertEqual(app.status_var.get(), "พร้อม")
         self.assertEqual(app.preset_var.get(), "Virtual Piano 61 คีย์ (C2-C7)")
         self.assertEqual(app.header_topmost_label.config["text"], "อยู่เหนือหน้าต่างอื่น")
+        self.assertEqual(app.stop_button.config["text"], "รีเซ็ต (Esc)")
         self.assertEqual(app.sheet_button.config["text"], "ส่งออก Sheet")
         self.assertEqual(app.lang_label.config["text"], "ภาษา / Language")
 

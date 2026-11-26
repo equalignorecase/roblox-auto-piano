@@ -129,7 +129,7 @@ class LogBackend(Backend):
 
 
 class Player:
-    """Plays a list of mapped notes on a background thread.
+    """Plays a list of mapped notes on a background thread with real-time tempo scaling.
 
     A new Player is created for each playback so an old thread can never
     interfere with a new run.
@@ -142,31 +142,74 @@ class Player:
     ) -> None:
         self.backend = backend
         self.on_state = on_state
-        self.progress = 0.0
+        self._progress = 0.0
         self.duration = 0.0
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._pause = threading.Event()
+        self._tempo_changed = threading.Event()
+        self._lock = threading.Lock()
         self._state = "idle"
-        self._origin = 0.0
+        self._tempo = 1.0
+        self._t0 = 0.0
+        self._s0 = 0.0
         self._events: list[Event] = []
 
     @property
     def state(self) -> str:
-        return self._state
+        with self._lock:
+            return self._state
 
     def _set_state(self, state: str) -> None:
-        self._state = state
+        with self._lock:
+            self._state = state
         if self.on_state:
             try:
                 self.on_state(state)
             except Exception:
                 pass
 
-    def play(self, notes, countdown: float = 3.0) -> None:
+    @property
+    def tempo(self) -> float:
+        with self._lock:
+            return self._tempo
+
+    def set_tempo(self, tempo: float) -> None:
+        """Update playback speed dynamically without stopping or restarting."""
+        with self._lock:
+            val = max(0.1, min(10.0, float(tempo)))
+            if abs(val - self._tempo) < 1e-4:
+                return
+            now = time.perf_counter()
+            if self._state == "playing":
+                current_song_pos = self._s0 + self._tempo * (now - self._t0)
+                self._s0 = max(0.0, min(current_song_pos, self.duration))
+                self._t0 = now
+            self._tempo = val
+            self._tempo_changed.set()
+
+    @property
+    def progress(self) -> float:
+        with self._lock:
+            if self._state == "playing":
+                now = time.perf_counter()
+                elapsed_song = self._s0 + self._tempo * (now - self._t0)
+                return max(0.0, min(elapsed_song, self.duration))
+            return self._progress
+
+    @progress.setter
+    def progress(self, val: float) -> None:
+        with self._lock:
+            self._progress = val
+
+    def play(self, notes, countdown: float = 3.0, tempo: float = 1.0) -> None:
         self._events = build_events(notes)
         self.duration = max((event.time for event in self._events), default=0.0)
-        self.progress = 0.0
+        with self._lock:
+            self._progress = 0.0
+            self._tempo = max(0.1, float(tempo))
+            self._s0 = 0.0
+            self._t0 = 0.0
         self._thread = threading.Thread(
             target=self._run, args=(countdown,), daemon=True, name="midi-player"
         )
@@ -175,42 +218,53 @@ class Player:
     def stop(self, wait: bool = False) -> None:
         self._stop.set()
         self._pause.clear()
+        self._tempo_changed.set()
         if wait and self._thread is not None:
             self._thread.join(timeout=2.0)
 
     def pause(self) -> None:
-        if self._state == "playing":
-            self._pause.set()
+        with self._lock:
+            if self._state == "playing":
+                self._pause.set()
 
     def resume(self) -> None:
         self._pause.clear()
 
     def toggle_pause(self) -> None:
-        if self._pause.is_set() or self._state == "paused":
+        if self._pause.is_set() or self.state == "paused":
             self.resume()
         else:
             self.pause()
 
-    def _wait_until(self, target: float) -> bool:
-        """Sleep until target (perf_counter time). False when stopped."""
+    def _target_time(self, event_time: float) -> float:
+        with self._lock:
+            return self._t0 + (event_time - self._s0) / self._tempo
+
+    def _wait_until(self, event_time: float) -> bool:
+        """Sleep until event_time in musical seconds. False when stopped."""
         while True:
             if self._stop.is_set():
                 return False
             if self._pause.is_set():
                 self._set_state("paused")
                 self.backend.release_all()
-                paused_at = time.perf_counter()
                 while self._pause.is_set() and not self._stop.is_set():
                     time.sleep(0.02)
-                self._origin += time.perf_counter() - paused_at
                 if self._stop.is_set():
                     return False
+                with self._lock:
+                    self._t0 = time.perf_counter()
                 self._set_state("playing")
+
+            if self._tempo_changed.is_set():
+                self._tempo_changed.clear()
+
+            target = self._target_time(event_time)
             remaining = target - time.perf_counter()
             if remaining <= 0:
                 return True
             if remaining > 0.003:
-                time.sleep(min(remaining - 0.002, 0.05))
+                time.sleep(min(remaining - 0.002, 0.02))
 
     def _run(self, countdown: float) -> None:
         events = self._events
@@ -224,15 +278,18 @@ class Player:
                     time.sleep(0.02)
 
             self._set_state("playing")
-            self._origin = time.perf_counter()
+            with self._lock:
+                self._t0 = time.perf_counter()
+                self._s0 = 0.0
             index = 0
             total = len(events)
             while index < total:
                 if self._stop.is_set():
                     return
                 event_time = events[index].time
-                self.progress = event_time
-                if not self._wait_until(self._origin + event_time):
+                with self._lock:
+                    self._progress = event_time
+                if not self._wait_until(event_time):
                     return
 
                 # Collect everything due now so chord notes go down together.
@@ -247,12 +304,13 @@ class Player:
                     else:
                         self.backend.release(event.key)
 
-            self.progress = self.duration
+            with self._lock:
+                self._progress = self.duration
             self._set_state("finished")
         except Exception as exc:  # surface backend failures through the state callback
             self._set_state(f"error: {exc}")
         finally:
             self.backend.release_all()
-            if self._state not in {"finished", "error"} and str(self._state).startswith("error") is False:
+            if self.state not in {"finished", "error"} and str(self.state).startswith("error") is False:
                 if self._stop.is_set():
                     self._set_state("stopped")

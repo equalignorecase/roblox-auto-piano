@@ -38,7 +38,7 @@ STATE_LABELS = {
     "idle": "พร้อม",
     "countdown": "นับถอยหลัง... สลับไปที่ Roblox",
     "playing": "กำลังเล่น",
-    "paused": "พักอยู่ (F9 เพื่อเล่นต่อ)",
+    "paused": "พักอยู่ (F8 เพื่อเล่นต่อ)",
     "stopped": "หยุดแล้ว",
     "finished": "จบเพลง",
 }
@@ -83,6 +83,7 @@ class App:
             value=i18n.get_preset_label(settings.get("preset", "virtualpiano61"), self.lang)
         )
         self.tempo_var = tk.StringVar(value=settings["tempo"])
+        self.tempo_var.trace_add("write", self._on_tempo_change)
         self.transpose_var = tk.StringVar(value=settings["transpose"])
         self.octave_var = tk.StringVar(value=settings["octave"])
         self.countdown_var = tk.StringVar(value=settings["countdown"])
@@ -233,15 +234,13 @@ class App:
 
         controls = ttk.Frame(main)
         controls.grid(row=2, column=0, sticky="ew", pady=(12, 12))
-        controls.columnconfigure(0, weight=2)
+        controls.columnconfigure(0, weight=3)
         controls.columnconfigure(1, weight=1)
-        controls.columnconfigure(2, weight=1)
         self.start_button = ttk.Button(controls, text=self._t("play_f8"), style="Accent.TButton", command=self._toggle)
-        self.start_button.grid(row=0, column=0, sticky="ew")
-        self.pause_button = ttk.Button(controls, text=self._t("pause_f9"), command=self._toggle_pause)
-        self.pause_button.grid(row=0, column=1, sticky="ew", padx=8)
-        self.stop_button = ttk.Button(controls, text=self._t("stop_esc"), command=self._abort)
-        self.stop_button.grid(row=0, column=2, sticky="ew")
+        self.start_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.stop_button = ttk.Button(controls, text=self._t("reset_esc"), command=self._abort)
+        self.stop_button.grid(row=0, column=1, sticky="ew")
+        self.pause_button = None
 
         self.progress = ttk.Progressbar(main, mode="determinate", maximum=1.0)
         self.progress.grid(row=3, column=0, sticky="ew", pady=(0, 8))
@@ -378,7 +377,7 @@ class App:
         if hasattr(self, "sheet_button"):
             self.sheet_button.configure(text=self._t("btn_export_sheet"))
         if hasattr(self, "stop_button"):
-            self.stop_button.configure(text=self._t("stop_esc"))
+            self.stop_button.configure(text=self._t("reset_esc"))
 
         if hasattr(self, "_panels"):
             if "download" in self._panels:
@@ -623,10 +622,12 @@ class App:
         }
 
     def _toggle(self) -> None:
-        if self._is_active():
-            self._abort()
-        else:
+        if self.player is None or self.player.state in {"idle", "stopped", "finished"}:
             self._start()
+        elif self.player.state == "paused":
+            self.player.resume()
+        elif self.player.state in {"playing", "countdown"}:
+            self.player.pause()
 
     def _start(self) -> None:
         if self._downloading:
@@ -651,7 +652,7 @@ class App:
         transformed = transform_notes(
             midi.notes,
             keymap,
-            tempo=tempo,
+            tempo=1.0,
             transpose=transpose,
             octave=octave,
             fold=self.fold_var.get(),
@@ -673,7 +674,7 @@ class App:
             self.player.stop(wait=True)
 
         self.player = Player(backend, on_state=lambda state: self.ui_queue.put(("state", state)))
-        self.player.play(transformed.notes, countdown=countdown)
+        self.player.play(transformed.notes, countdown=countdown, tempo=tempo)
         self.progress.configure(maximum=max(self.player.duration, 0.1), value=0)
         self.status_var.set(self._state_label("countdown") if countdown else self._state_label("playing"))
 
@@ -695,12 +696,7 @@ class App:
         self._refresh_buttons()
 
     def _toggle_pause(self) -> None:
-        if self.player is None:
-            return
-        if self.player.state == "paused":
-            self.player.resume()
-        elif self.player.state == "playing":
-            self.player.pause()
+        self._toggle()
 
     def _abort(self) -> None:
         if self.player is not None:
@@ -712,12 +708,35 @@ class App:
         self._refresh_buttons()
 
     # ------------------------------------------------------------- events
+    def _adjust_speed(self, delta: float) -> None:
+        try:
+            curr = float(self.tempo_var.get())
+        except (ValueError, TypeError):
+            curr = 1.0
+        new_speed = round(max(0.25, min(4.0, curr + delta)), 2)
+        self.tempo_var.set(f"{new_speed:.2f}")
+
+    def _on_tempo_change(self, *_args) -> None:
+        try:
+            val = float(self.tempo_var.get())
+            if val <= 0:
+                return
+            if self.player is not None:
+                self.player.set_tempo(val)
+                if self._is_active():
+                    state_text = self._state_label(self.player.state)
+                    self.status_var.set(f"{state_text} · {self._t('speed_status')}: {val:.2f}x")
+        except (ValueError, TypeError):
+            pass
+
     def _start_hotkeys(self) -> None:
         try:
             self._hotkeys = Hotkeys(
                 on_toggle=lambda: self.ui_queue.put(("hotkey", "toggle")),
                 on_pause=lambda: self.ui_queue.put(("hotkey", "pause")),
                 on_abort=lambda: self.ui_queue.put(("hotkey", "abort")),
+                on_speed_up=lambda: self.ui_queue.put(("hotkey", "speed_up")),
+                on_speed_down=lambda: self.ui_queue.put(("hotkey", "speed_down")),
                 on_error=lambda message: self.ui_queue.put(("hotkey_error", message)),
             )
             self._hotkeys.start()
@@ -742,6 +761,10 @@ class App:
                         self._toggle_pause()
                     elif value == "abort":
                         self._abort()
+                    elif value == "speed_up":
+                        self._adjust_speed(0.10)
+                    elif value == "speed_down":
+                        self._adjust_speed(-0.10)
                 elif kind == "hotkey_error":
                     self.status_var.set(self._t("hotkey_error", error=value))
                 elif kind == "download_status":
@@ -773,14 +796,24 @@ class App:
     def _refresh_buttons(self) -> None:
         active = self._is_active()
         paused = self.player is not None and self.player.state == "paused"
+        playing = self.player is not None and self.player.state in {"playing", "countdown"}
         if hasattr(self, "start_button"):
-            self.start_button.configure(text=self._t("stop_f8") if active else self._t("play_f8"))
+            if paused:
+                btn_text = self._t("resume_f8")
+            elif playing:
+                btn_text = self._t("pause_f8")
+            else:
+                btn_text = self._t("play_f8")
+            self.start_button.configure(text=btn_text)
             self.start_button.configure(state="disabled" if self._downloading else "normal")
+        if hasattr(self, "stop_button"):
+            self.stop_button.configure(text=self._t("reset_esc"))
+            self.stop_button.configure(state="normal" if active else "disabled")
         if hasattr(self, "download_button"):
             self.download_button.configure(state="disabled" if self._downloading or active else "normal")
-        if hasattr(self, "pause_button"):
+        if hasattr(self, "pause_button") and self.pause_button is not None:
             self.pause_button.configure(state="normal" if active else "disabled")
-            self.pause_button.configure(text=self._t("resume_f9") if paused else self._t("pause_f9"))
+            self.pause_button.configure(text=self._t("resume_f8") if paused else self._t("pause_f8"))
 
     # -------------------------------------------------------------- close
     def _on_close(self) -> None:
